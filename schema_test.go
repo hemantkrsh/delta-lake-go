@@ -52,3 +52,5 @@ func TestSchema_AddField_Struct(t *testing.T) {
 		Nullable: true,
 	})
 }
+
+// copilot generated test case
