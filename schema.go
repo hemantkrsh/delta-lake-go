@@ -26,31 +26,31 @@ type SchemaStruct = Schema
 type DataType string
 
 type FieldSchema struct {
-	Name      string
-	FieldType SchemaType
-	Nullable  bool
+	Name      string     `json:"name"`
+	FieldType SchemaType `json:"type"`
+	Nullable  bool       `json:"nullable"`
 }
 
 type StructSchema struct {
-	schemaType SchemaType
-	Fields     []SchemaType
+	SchemaType SchemaType   `json:"type"`
+	Fields     []SchemaType `json:"fields"`
 }
 
 type ArraySchema struct {
-	schemaType  DataType
-	ElementType SchemaType
-	Nullable    bool
+	SchemaType  DataType   `json:"type"`
+	ElementType SchemaType `json:"element_type"`
+	Nullable    bool       `json:"nullable"`
 }
 
 type MapSchema struct {
-	schemaType    DataType
-	KeyType       DataType
-	ValueType     SchemaType
-	ValueNullable bool
+	SchemaType    DataType   `json:"type"`
+	KeyType       DataType   `json:"key_type"`
+	ValueType     SchemaType `json:"value_type"`
+	ValueNullable bool       `json:"value_nullable"`
 }
 
 type Schema struct {
-	Fields []SchemaType
+	Fields []SchemaType `json:"fields"`
 }
 
 func NewSchema() *Schema {
