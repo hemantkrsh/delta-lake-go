@@ -10,28 +10,24 @@ Change protocol
 Commit info
 */
 
-type Add struct {
-	// Add file
-}
-
 /**
 https://pl.seequality.net/delta-lake-101-part-2-transaction-log/
 create table
 {
   "commitInfo": {
-    "timestamp": 1679759207135,
-    "operation": "CREATE TABLE",
-    "operationParameters": {
+    "timestamp": 1679759207135, --
+    "operation": "CREATE TABLE", --
+    "operationParameters": { --
       "isManaged": "true",
       "description": null,
-      "partitionBy": "[]",
-      "properties": "{}"
+      "partitionBy": "[]", --
+      "properties": "{}" --
     },
     "isolationLevel": "Serializable",
     "isBlindAppend": true,
     "operationMetrics": {},
     "engineInfo": "Apache-Spark/3.3.1.5.2-84175989 Delta-Lake/2.2.0.1",
-    "txnId": "4d8f952b-e3dd-4390-affc-ee2d8075a843"
+    "txnId": "4d8f952b-e3dd-4390-affc-ee2d8075a843" --
   }
 }
 protocol
@@ -56,4 +52,34 @@ metadata
     "createdTime": 1679759207032
   }
 }
+table metadata
+  name
+  description
+  format
+  schemastring
+  partition columns
+  created time
+  configuration
 */
+
+type commitInfo struct {
+	timestamp           int64
+	operation           string
+	operationParameters map[string]string
+	transactionId       string
+}
+
+type protocol struct {
+	minReaderVersion int
+	minWriterVersion int
+}
+
+type metadata struct {
+	name             string
+	description      string
+	format           string
+	schemaString     string
+	partitionColumns []string
+	createdTime      int64
+	configuration    map[string]string
+}
