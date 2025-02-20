@@ -62,24 +62,42 @@ table metadata
   configuration
 */
 
-type commitInfo struct {
-	timestamp           int64
-	operation           string
-	operationParameters map[string]string
-	transactionId       string
+type CommitInfo struct {
+	Timestamp           int64             `json:"timestamp"`
+	Operation           string            `json:"operation"`
+	OperationParameters map[string]string `json:"operationParameters"`
+	TransactionId       string            `json:"txnId"`
 }
 
-type protocol struct {
-	minReaderVersion int
-	minWriterVersion int
+type Protocol struct {
+	MinReaderVersion int `json:"minReaderVersion"`
+	MinWriterVersion int `json:"minWriterVersion"`
 }
 
-type metadata struct {
-	name             string
-	description      string
-	format           string
-	schemaString     string
-	partitionColumns []string
-	createdTime      int64
-	configuration    map[string]string
+type Metadata struct {
+	Name             string            `json:"name"`
+	Description      string            `json:"description"`
+	Format           string            `json:"format"`
+	SchemaString     string            `json:"schemaString"`
+	PartitionColumns []string          `json:"partitionColumns"`
+	CreatedTime      int64             `json:"createdTime"`
+	Configuration    map[string]string `json:"configuration"`
 }
+
+/**
+change metadata action
+operation = CREATE TABLE
+first table operation
+then txn entry
+checkpoint
+
+txn entry should have the operation(change metadta, add data) and then the metadata about the action.
+
+next steps--
+newmetadata
+txn struct and commit and other methods
+new transaction
+delta write (parquet write) --deps on logstore(lets go with local file, and then s3)
+txn commit
+checkpoint --could be done later
+*/
