@@ -1,0 +1,3 @@
+# Ignore sample transaction log folder
+sample-txn-log/
+.DS_Store
