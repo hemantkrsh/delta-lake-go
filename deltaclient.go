@@ -549,6 +549,15 @@ func (dc *deltaClient) filterDeletes(actions []Action) []Action {
 	return filteredActions
 }
 
+func (dc *deltaClient) createCheckpoint() {
+	// iterate on the logs since last checkpoint(if exists using the _lastest_checkpoint file) else from the start.
+	// leverage the iterate logic to remove the files with REMOVE and only keep the ADD
+	// create the .checkpoint file using the putIfAbsent if present then its success
+	// update the _latest_checkpoint file with the filename.
+	// are there any concurrent writers issue - putifAbsent takes care of the checkpoint file, what about the update to _latest_checkpoint meta file
+	// support for etag based put If-match
+}
+
 // func (dc *deltaClient) readTxn(table string) error {
 // 	txnLogPath := path.Join(table, logDir)
 // 	log.Printf("txnLogPath: %s", txnLogPath)
