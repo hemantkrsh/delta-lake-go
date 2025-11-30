@@ -1,13 +1,16 @@
 package delta
 
 import (
+	"crypto/md5"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -151,6 +154,79 @@ func (fos *fileObjectStorage) putIfAbsent(key string, data []byte) error {
 	}
 
 	return nil
+}
+
+// TODO:finish me
+func (fos *fileObjectStorage) keyExists(keyPath string, eTag []byte) (bool, error) {
+
+	prefix, err := fos.prefix(keyPath)
+	if err != nil {
+		return false, err
+	}
+
+	// todo: extension needed?
+	_, err = fos.listPrefix(prefix, fos.previousIndex(path.Base(keyPath))) //list the prefix
+	if err != nil {
+		return false, err
+	}
+
+	// is it possible checkpoint not done and .log have been created -- yes
+	// two scenarios -
+	/*
+		1. Use _last_checkpoint to check the last checkpoint, if empty/does not exist or file index >= 10 then create the checkpoint.
+		2. The checkpoint file index is same as the index of the log which the same client writes in the same txn.
+		3. This makes sure that the log is deduped and checkpoint unique is an result of the same dedupe process.
+
+		Algorithm:
+		1. From the last checkpoint or 0-index log read all the entries one by one.
+		2. Create a map of all the add - files, if any remove is found remove from the map.
+		3. Serialise and write it to .checkpoint.json file.
+		4. commit txn.
+
+	*/
+
+	_, err = os.Open(keyPath)
+	if err != nil {
+		log.Printf("error in reading the directory:%s", keyPath)
+		return false, err
+	}
+
+	// TODO: Implement actual key existence check with eTag verification
+	return false, nil
+}
+
+func (fos *fileObjectStorage) previousIndex(name string) string {
+	// Extract the base name without extension
+	base := strings.TrimSuffix(path.Base(name), path.Ext(name))
+	// Find the last 20 digits in the name (to handle long numbers)
+	re := regexp.MustCompile(`(\d{1,20})$`)
+	matches := re.FindStringSubmatch(base)
+	if len(matches) < 2 {
+		return "0" // Return "0" if no number found
+	}
+	// Parse the number and subtract 1 to get previous index
+	num, err := strconv.ParseInt(matches[1], 10, 64)
+	if err != nil {
+		return "0"
+	}
+	if num > 0 {
+		num--
+	}
+	return strconv.FormatInt(num, 10)
+}
+
+func (fos *fileObjectStorage) prefix(keyPath string) (string, error) {
+	//remove the base to only return prefix
+	baseIdx := strings.Index(keyPath, path.Base(keyPath))
+	if baseIdx == -1 {
+		return "", fmt.Errorf("base not found in keyPath: %s", keyPath)
+	}
+	return keyPath[:baseIdx], nil
+}
+
+func (fos *fileObjectStorage) md5(data []byte) ([]byte, error) {
+	hash := md5.Sum(data)
+	return hash[:], nil
 }
 
 // todo: support start key like listprefix of s3 -- Done
