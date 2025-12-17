@@ -21,6 +21,7 @@ type objectStorage interface {
 	putIfAbsent(name string, data []byte) error
 	listPrefix(prefix string, startAfter string) ([]string, error)
 	read(name string) ([]byte, error)
+	keyExists(key string) (bool, error)
 }
 
 type fileObjectStorage struct {
@@ -28,10 +29,12 @@ type fileObjectStorage struct {
 }
 
 const (
-	tempDir = "_temp"
-	logDir  = "_delta_log"
-	logExt  = ".log"
-	dataExt = ".data"
+	tempDir        = "_temp"
+	logDir         = "_delta_log"
+	logExt         = ".log"
+	dataExt        = ".data"
+	lastCheckPoint = "_last_checkpoint"
+	checkpointExt  = ".checkpoint"
 )
 
 func NewFileObjectStorage(deltaBaseDir string) fileObjectStorage {
@@ -140,6 +143,7 @@ func (fos *fileObjectStorage) putIfAbsent(key string, data []byte) error {
 		return err
 	}
 
+	//https://rcrowley.org/2010/01/06/things-unix-can-do-atomically.html
 	err = os.Link(tmpPath, finalPath)
 	if err != nil {
 		log.Printf("Failed to link file: %v", err)
@@ -156,43 +160,87 @@ func (fos *fileObjectStorage) putIfAbsent(key string, data []byte) error {
 	return nil
 }
 
-// TODO:finish me
-func (fos *fileObjectStorage) keyExists(keyPath string, eTag []byte) (bool, error) {
-
-	prefix, err := fos.prefix(keyPath)
+func (fos *fileObjectStorage) keyExists(key string) (bool, error) {
+	//_last_checkpoint
+	//only one exists - listPrefix len == 0 ret false
+	keys, err := fos.listPrefix(key, "")
 	if err != nil {
 		return false, err
 	}
+	if len(keys) == 0 {
+		return false, nil
+	}
+	return true, nil
+}
 
-	// todo: extension needed?
-	_, err = fos.listPrefix(prefix, fos.previousIndex(path.Base(keyPath))) //list the prefix
-	if err != nil {
-		return false, err
+// TODO: make the putIfAbsent and overwrite common with flag based approach
+func (fos *fileObjectStorage) put(key string, data []byte) error {
+	txnDir := path.Dir(key)
+	tmpPath := path.Join(fos.deltaBaseDir, txnDir, tempDir, uuid.NewString())
+	finalPath := path.Join(fos.deltaBaseDir, key) // Full path including table name
+
+	log.Printf("putIfAbsent finalpath: %v", finalPath)
+
+	// Ensure parent directories exist for both temp and final paths
+	dirsToCreate := []string{
+		path.Dir(tmpPath),   // temp file's parent dir
+		path.Dir(finalPath), // final file's parent dir
 	}
 
-	// is it possible checkpoint not done and .log have been created -- yes
-	// two scenarios -
-	/*
-		1. Use _last_checkpoint to check the last checkpoint, if empty/does not exist or file index >= 10 then create the checkpoint.
-		2. The checkpoint file index is same as the index of the log which the same client writes in the same txn.
-		3. This makes sure that the log is deduped and checkpoint unique is an result of the same dedupe process.
-
-		Algorithm:
-		1. From the last checkpoint or 0-index log read all the entries one by one.
-		2. Create a map of all the add - files, if any remove is found remove from the map.
-		3. Serialise and write it to .checkpoint.json file.
-		4. commit txn.
-
-	*/
-
-	_, err = os.Open(keyPath)
-	if err != nil {
-		log.Printf("error in reading the directory:%s", keyPath)
-		return false, err
+	for _, dir := range dirsToCreate {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("failed to create directory %s: %w", dir, err)
+		}
 	}
 
-	// TODO: Implement actual key existence check with eTag verification
-	return false, nil
+	log.Printf("Writing to temp path: %s", tmpPath)
+	tmpFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0644)
+	if err != nil {
+		fmt.Printf("error in creating the tmpFile:%v", err)
+		return err
+	}
+
+	bufferSize := 4 * 1024 //page default size 4KB
+	written := 0
+	for written < len(data) {
+		toWrite := min(bufferSize+written, len(data))
+		n, err := tmpFile.Write(data[written:toWrite])
+		if err != nil {
+			assert(os.Remove(tmpPath) == nil, "Failed to remove temp file")
+			return err
+		}
+		written += n
+	}
+
+	err = tmpFile.Sync()
+	if err != nil {
+		assert(os.Remove(tmpPath) == nil, "Failed to remove temp file")
+		return err
+	}
+
+	err = tmpFile.Close()
+	if err != nil {
+		assert(os.Remove(tmpPath) == nil, "Failed to remove temp file")
+		return err
+	}
+
+	//https://rcrowley.org/2010/01/06/things-unix-can-do-atomically.html
+	//rename atomic within the same file system
+	err = os.Rename(tmpPath, finalPath)
+	if err != nil {
+		log.Printf("Failed to link file: %v", err)
+		assert(os.Remove(tmpPath) == nil, "Failed to remove temp file")
+		return err
+	}
+
+	// remove the temp txn file
+	err = os.Remove(tmpPath)
+	if err != nil {
+		return err
+	}
+
+	return nil
+
 }
 
 func (fos *fileObjectStorage) previousIndex(name string) string {

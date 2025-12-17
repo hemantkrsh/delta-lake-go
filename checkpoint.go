@@ -13,3 +13,13 @@ func newCheckpoint(table string) *Checkpoint {
 		TotalActiveRows: 0,
 	}
 }
+
+type LastCheckpoint struct {
+	Checkpoint string
+}
+
+func newLastCheckpoint(name string) *LastCheckpoint {
+	return &LastCheckpoint{
+		Checkpoint: name,
+	}
+}
