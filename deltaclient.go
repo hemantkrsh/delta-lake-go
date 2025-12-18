@@ -82,7 +82,7 @@ func (dc *deltaClient) nwTableTxn(table string) error {
 		for _, action := range oldTxn.Actions {
 			if action.DataActionObject != nil {
 				// append previous actions
-				// todo: handle remove files
+				// TODO: handle remove files
 				dc.txn.prevActions = append(
 					dc.txn.prevActions,
 					action,
@@ -204,18 +204,6 @@ func (dc *deltaClient) flushRows(table string) error {
 	return nil
 }
 
-// TODO: Finish this.
-/**
-{
-  "remove": {
-    "path": "part-00001-9…..snappy.parquet",
-    "deletionTimestamp": 1515488792485,
-    "baseRowId": 4071,
-    "defaultRowCommitVersion": 41,
-    "dataChange": true
-  }
-}
-*/
 func (dc *deltaClient) remove(table string, predicate string) error {
 	if dc.txn == nil {
 		return errNoTxn
@@ -386,11 +374,19 @@ func (dc *deltaClient) commit() error {
 	// write the txn
 	txnLog := fmt.Sprintf("%020d%s", dc.txn.TxnId, logExt)
 	log.Printf("txnLog: %s", txnLog)
-	// FIXME: logDir is not passed so the error
 	err = dc.storage.putIfAbsent(path.Join(table, logDir, txnLog), data)
 	if err != nil {
 		dc.txn = nil
 		return err
+	}
+
+	//create checkpoint every 10th txn once the txn is committed, this way the client that commits the txn, also commits the checkpoint
+	//with same index i.e. until that txn log the actions are compacted
+	if dc.txn.TxnId%checkpointFrequency == 0 {
+		err := dc.createCheckpoint(dc.txn.TxnId)
+		if err != nil {
+			log.Printf("failed to create checkpoint: %v", err) //only log
+		}
 	}
 
 	dc.txn = nil
@@ -469,6 +465,7 @@ func (dc *deltaClient) read(table string) (*rowIterator, error) {
 
 	dataObjectsToRead := make([]dataObject, 0, 5)
 
+	//TODO: the prevAction can get active logs starting at the checkpoint
 	for _, action := range dc.txn.prevActions {
 		if (action.DataActionObject != nil && action.DataActionObject.ActionType == "Add") ||
 			(action.DataActionObject != nil && action.DataActionObject.ActionType == "Remove") {
@@ -549,58 +546,114 @@ func (dc *deltaClient) filterDeletes(actions []Action) []Action {
 	return filteredActions
 }
 
+/*
+iterate on the logs since last checkpoint(if exists using the _lastest_checkpoint file) else from the start.
+leverage the iterate logic to remove the files with REMOVE and only keep the ADD
+create the .checkpoint file using the putIfAbsent if present then its success
+update the _latest_checkpoint file with the filename. put call
+are there any concurrent writers issue - putifAbsent takes care of the checkpoint file,
+if the index is taken then the putifAbsent will fail and the checkpoint belongs to the client which takes the index.
+this makes sure that checkpoint is created by only one client. -- IMPLICIT
+what about the update to _latest_checkpoint meta file -- this should be part of the checkpoint txn.
+support for etag based put If-match -- Not required as the checkpoint is created by only one client.
+*/
 func (dc *deltaClient) createCheckpoint(index int) error {
-	// iterate on the logs since last checkpoint(if exists using the _lastest_checkpoint file) else from the start.
-	// leverage the iterate logic to remove the files with REMOVE and only keep the ADD
-	// create the .checkpoint file using the putIfAbsent if present then its success
-	// update the _latest_checkpoint file with the filename. put call
-	// are there any concurrent writers issue - putifAbsent takes care of the checkpoint file,
-	// if the index is taken then the putifAbsent will fail and the checkpoint belongs to the client which takes the index.
-	// this makes sure that checkpoint is created by only one client. -- IMPLICIT
-	// what about the update to _latest_checkpoint meta file -- this should be part of the checkpoint txn.
-	// support for etag based put If-match -- Not required as the checkpoint is created by only one client.
+	//TODO: Pending
+	//create the checkpoint file -- create list from activeLogs map and marshall to json
+	//get checkpoint file name using the index
+	//create checkpoint file using putIfAbsent
+	//update _latest_checkpoint file using put
 
-	path := path.Join(dc.txn.table, lastCheckPoint)
-	lastCheckPointExists, err := dc.storage.keyExists(path)
+	checkPointPath := path.Join(dc.txn.table, lastCheckPoint)
+	lastCheckPointExists, err := dc.storage.keyExists(checkPointPath)
 	if err != nil {
 		log.Printf("error in checking checkpoint exists: %v", err)
 		return err
 	}
 
-	var lastCheckPointLog *LastCheckpoint
+	var previousCheckPointLog *LastCheckpoint
 	if lastCheckPointExists {
 		//read checkpoint
 		lastCheckPointBytes, err := dc.storage.read(lastCheckPoint)
 		if err != nil {
 			return err
 		}
-		err = json.Unmarshal(lastCheckPointBytes, &lastCheckPointLog)
+		err = json.Unmarshal(lastCheckPointBytes, &previousCheckPointLog)
 		if err != nil {
 			return err
 		}
 	}
 
 	//read through last checkpoint file until now
-	lastCheckpoint, err := dc.readCheckpoint(lastCheckPointLog.Checkpoint)
+	previousCheckpoint, err := dc.readCheckpoint(previousCheckPointLog.Checkpoint)
 	if err != nil {
 		return err
 	}
 
 	//creat map activeLogs
 	activeLogs := make(map[string]any)
-	for _, log := range lastCheckpoint.ActiveLogs {
+	for _, log := range previousCheckpoint.ActiveLogs {
 		activeLogs[log] = 1
 	}
 
 	//invoke createLatestCheckpoint and get activerows
-	activeRows, err := dc.createLatestCheckpoint(activeLogs, lastCheckPointLog.Checkpoint)
+	activeRows, err := dc.createLatestCheckpoint(activeLogs, previousCheckPointLog.Checkpoint)
 	if err != nil {
 		return err
 	}
 
 	log.Printf("activeRows: %d", activeRows)
 
+	checkPointLog := dc.getLogName(index, logExt, checkpointExt)
+	checkPointData, err := dc.checkPointData(activeLogs, activeRows)
+	if err != nil {
+		return err
+	}
+
+	//write checkpoint
+	err = dc.storage.putIfAbsent(checkPointLog, checkPointData)
+	if err != nil {
+		dc.txn = nil
+		return err
+	}
+
+	//update _last_checkpoint file
+	lastCheckPointLog := path.Join(dc.txn.table, lastCheckPoint) //append table name
+	lastCheckPointData := &LastCheckpoint{
+		Checkpoint: checkPointLog,
+	}
+	lastCheckPointDataBytes, err := json.Marshal(lastCheckPointData)
+	if err != nil {
+		return err
+	}
+	err = dc.storage.put(lastCheckPointLog, lastCheckPointDataBytes) //
+	if err != nil {
+		return err
+	}
 	return nil
+}
+
+func (dc *deltaClient) checkPointData(activeLogs map[string]any, activeRows int) ([]byte, error) {
+	logs := make([]string, 0, len(activeLogs))
+	for log := range activeLogs {
+		logs = append(logs, log)
+	}
+
+	checkpoint := &Checkpoint{
+		Table:           dc.txn.table,
+		ActiveLogs:      logs,
+		TotalActiveRows: activeRows,
+	}
+
+	bytes, err := json.Marshal(checkpoint)
+	if err != nil {
+		return nil, err
+	}
+	return bytes, nil
+}
+
+func (dc *deltaClient) getLogName(index int, exts ...string) string {
+	return fmt.Sprintf("%020d%s", index, strings.Join(exts, ""))
 }
 
 func (dc *deltaClient) readCheckpoint(checkpointLog string) (*Checkpoint, error) {

@@ -17,6 +17,7 @@ import (
 )
 
 type objectStorage interface {
+	put(key string, data []byte) error
 	putObject(key string, data []byte) error
 	putIfAbsent(name string, data []byte) error
 	listPrefix(prefix string, startAfter string) ([]string, error)

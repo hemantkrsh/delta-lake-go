@@ -23,3 +23,5 @@ func newLastCheckpoint(name string) *LastCheckpoint {
 		Checkpoint: name,
 	}
 }
+
+const checkpointFrequency = 10
