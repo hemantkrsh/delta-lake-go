@@ -23,11 +23,11 @@ type dataObject struct {
 }
 
 var (
-	errTxnExists           = errors.New("Transaction already exists")
-	errNoTxn               = errors.New("No transaction exists")
-	errTableExists         = errors.New("Table already exists")
-	errTableNotFound       = errors.New("Table not found")
-	errIncorrectExprFormat = errors.New("Query is not formatted correctly")
+	errTxnExists           = errors.New("transaction already exists")
+	errNoTxn               = errors.New("no transaction exists")
+	errTableExists         = errors.New("table already exists")
+	errTableNotFound       = errors.New("table not found")
+	errIncorrectExprFormat = errors.New("query is not formatted correctly")
 )
 
 func NewDeltaClient(storage objectStorage) deltaClient {
@@ -36,12 +36,6 @@ func NewDeltaClient(storage objectStorage) deltaClient {
 		txn:     nil,
 	}
 }
-
-// Even though this version will maintain txn for each table separately.
-// On creating new txn it loads all the metadata for all
-// tables. Will change it later for each table actions only for faster
-// txn creation overall. This is a mvp implementation so does not expect
-// 100s of tables.
 
 func (dc *deltaClient) nwTxn() error {
 	if dc.txn != nil {
@@ -77,24 +71,37 @@ func (dc *deltaClient) nwTableTxn(table string) error {
 		// set new txn id
 		dc.txn.TxnId = oldTxn.TxnId + 1
 
-		// add prev actions
-		// the remove could be handled here - the removed files may be filtered for dataobjects
-		for _, action := range oldTxn.Actions {
-			if action.DataActionObject != nil {
-				// append previous actions
-				// TODO: handle remove files
-				dc.txn.prevActions = append(
-					dc.txn.prevActions,
-					action,
-				)
-			} else if action.ChangeMetadataObject != nil {
-				// add schema
-				dc.txn.schema = action.ChangeMetadataObject.Columns
-			} else {
-				panic("Invalid action type")
-			}
-		}
+		// // add prev actions
+		// // the remove could be handled here - the removed files may be filtered for dataobjects
+		// for _, action := range oldTxn.Actions {
+		// 	if action.DataActionObject != nil {
+		// 		// append previous actions
+		// 		// TODO: handle remove files
+		// 		dc.txn.prevActions = append(
+		// 			dc.txn.prevActions,
+		// 			action,
+		// 		)
+		// 	} else if action.ChangeMetadataObject != nil {
+		// 		// add schema
+		// 		dc.txn.schema = action.ChangeMetadataObject.Columns
+		// 	} else {
+		// 		panic("Invalid action type")
+		// 	}
+		// }
 	}
+
+	//use checkpointing mechanism to populate prev actions and schema
+	checkpoint, err := dc.getOrCreateCheckpoint()
+	if err != nil {
+		log.Printf("error in getOrCreateCheckpoint: %v", err)
+		return err
+	}
+
+	log.Printf("checkpoint: %+v", checkpoint)
+
+	dc.txn.prevActions = append(dc.txn.prevActions, checkpoint.Add...)
+	dc.txn.schema = append(dc.txn.schema, checkpoint.Schema...)
+
 	return nil
 }
 
@@ -382,14 +389,15 @@ func (dc *deltaClient) commit() error {
 
 	//create checkpoint every 10th txn once the txn is committed, this way the client that commits the txn, also commits the checkpoint
 	//with same index i.e. until that txn log the actions are compacted
-	if dc.txn.TxnId%checkpointFrequency == 0 {
-		err := dc.createCheckpoint(dc.txn.TxnId)
+	if dc.txn.TxnId != 0 && dc.txn.TxnId%checkpointFrequency == 0 {
+		err := dc.triggerCheckpoint(dc.txn.TxnId)
 		if err != nil {
+			dc.txn = nil
 			log.Printf("failed to create checkpoint: %v", err) //only log
 		}
 	}
 
-	dc.txn = nil
+	dc.txn = nil //this should be cleared anyways
 	return nil
 }
 
@@ -455,7 +463,10 @@ func (dc *deltaClient) read(table string) (*rowIterator, error) {
 
 	// if no table txn has been done until now then init otherwise no
 	if len(dc.txn.schema) == 0 {
-		dc.nwTableTxn(table)
+		if err := dc.nwTableTxn(table); err != nil {
+			log.Printf("failed to create table txn: %v", err)
+			return nil, err
+		}
 	}
 
 	log.Printf("read txn:%+v", dc.txn)
@@ -557,91 +568,189 @@ this makes sure that checkpoint is created by only one client. -- IMPLICIT
 what about the update to _latest_checkpoint meta file -- this should be part of the checkpoint txn.
 support for etag based put If-match -- Not required as the checkpoint is created by only one client.
 */
-func (dc *deltaClient) createCheckpoint(index int) error {
-	//TODO: Pending
-	//create the checkpoint file -- create list from activeLogs map and marshall to json
-	//get checkpoint file name using the index
-	//create checkpoint file using putIfAbsent
-	//update _latest_checkpoint file using put
-
-	checkPointPath := path.Join(dc.txn.table, lastCheckPoint)
-	lastCheckPointExists, err := dc.storage.keyExists(checkPointPath)
-	if err != nil {
-		log.Printf("error in checking checkpoint exists: %v", err)
-		return err
-	}
-
-	var previousCheckPointLog *LastCheckpoint
-	if lastCheckPointExists {
-		//read checkpoint
-		lastCheckPointBytes, err := dc.storage.read(lastCheckPoint)
-		if err != nil {
-			return err
-		}
-		err = json.Unmarshal(lastCheckPointBytes, &previousCheckPointLog)
-		if err != nil {
-			return err
-		}
-	}
-
-	//read through last checkpoint file until now
-	previousCheckpoint, err := dc.readCheckpoint(previousCheckPointLog.Checkpoint)
+func (dc *deltaClient) triggerCheckpoint(index int) error {
+	var checkpoint *Checkpoint
+	var err error
+	checkpoint, err = dc.getOrCreateCheckpoint()
 	if err != nil {
 		return err
 	}
 
-	//creat map activeLogs
-	activeLogs := make(map[string]any)
-	for _, log := range previousCheckpoint.ActiveLogs {
-		activeLogs[log] = 1
-	}
+	log.Printf("activeRows: %d", checkpoint.TotalActiveRows)
 
-	//invoke createLatestCheckpoint and get activerows
-	activeRows, err := dc.createLatestCheckpoint(activeLogs, previousCheckPointLog.Checkpoint)
-	if err != nil {
-		return err
-	}
-
-	log.Printf("activeRows: %d", activeRows)
-
-	checkPointLog := dc.getLogName(index, logExt, checkpointExt)
-	checkPointData, err := dc.checkPointData(activeLogs, activeRows)
+	checkpointLog := dc.getLogName(index, logExt, checkpointExt)
+	checkpointBytes, err := dc.marshallCheckpoint(checkpoint.Schema, checkpoint.Add, checkpoint.Remove, checkpoint.TotalActiveRows)
 	if err != nil {
 		return err
 	}
 
 	//write checkpoint
-	err = dc.storage.putIfAbsent(checkPointLog, checkPointData)
+	err = dc.storage.putIfAbsent(checkpointLog, checkpointBytes)
 	if err != nil {
 		dc.txn = nil
 		return err
 	}
 
 	//update _last_checkpoint file
-	lastCheckPointLog := path.Join(dc.txn.table, lastCheckPoint) //append table name
-	lastCheckPointData := &LastCheckpoint{
-		Checkpoint: checkPointLog,
+	lastCheckpointLog := path.Join(dc.txn.table, lastCheckPoint) //append table name
+	lastCheckpointData := &LastCheckpoint{
+		Checkpoint: checkpointLog,
 	}
-	lastCheckPointDataBytes, err := json.Marshal(lastCheckPointData)
+	lastCheckpointDataBytes, err := json.Marshal(lastCheckpointData)
 	if err != nil {
 		return err
 	}
-	err = dc.storage.put(lastCheckPointLog, lastCheckPointDataBytes) //
+	err = dc.storage.put(lastCheckpointLog, lastCheckpointDataBytes) //
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func (dc *deltaClient) checkPointData(activeLogs map[string]any, activeRows int) ([]byte, error) {
-	logs := make([]string, 0, len(activeLogs))
-	for log := range activeLogs {
-		logs = append(logs, log)
+// Read all the files from the table and create the first checkpoint
+// Handle the Remove actions and filter them out
+func (dc *deltaClient) logCheckpoint(adds map[Action]any, removes map[Action]any, lastCheckpoint string) (*Checkpoint, error) {
+	rowsSinceLastCheckpoint := 0
+	table := dc.txn.table
+	schema := dc.txn.schema
+	addActions := make([]Action, 0)
+	removeActions := make([]Action, 0)
+	txnLogPath := path.Join(table, logDir)
+	log.Printf("txnLogPath: %s", txnLogPath)
+	txnLogs, err := dc.storage.listPrefix(txnLogPath, lastCheckpoint)
+	if err != nil {
+		return nil, err
 	}
+
+	slices.Sort(txnLogs)
+	log.Printf("txnlogs count: %d", len(txnLogs))
+
+	for _, txnLog := range txnLogs {
+		bytes, err := dc.storage.read(path.Join(txnLogPath, txnLog))
+		if err != nil {
+			return nil, err
+		}
+		var oldTxn transaction
+		err = json.Unmarshal(bytes, &oldTxn)
+		if err != nil {
+			return nil, err
+		}
+
+		// add prev actions
+		// the remove could be handled here - the removed files may be filtered for dataobjects
+		for _, action := range oldTxn.Actions {
+			if action.DataActionObject != nil {
+				//Add the appended logs
+				switch action.DataActionObject.ActionType {
+				case "Add":
+					//addActions = append(addActions, action)
+					adds[action] = 1
+					rowsSinceLastCheckpoint += action.DataActionObject.NumRows
+				case "Remove":
+					removes[action] = 1
+					//removeActions = append(removeActions, action)
+					//remove from add if exists
+					if _, exists := adds[action]; exists {
+						delete(adds, action)
+						rowsSinceLastCheckpoint -= action.DataActionObject.NumRows
+					}
+					//removeActions = append(removeActions, action)
+				}
+			} else if action.ChangeMetadataObject != nil {
+				// add schema -- overwrite and keep latest
+				schema = action.ChangeMetadataObject.Columns
+			} else {
+				panic("Invalid action type")
+			}
+		}
+	}
+
+	for action := range adds {
+		addActions = append(addActions, action)
+	}
+
+	for action := range removes {
+		removeActions = append(removeActions, action)
+	}
+
+	log.Printf("Created checkpoint - Table: %s, Rows: %d, Schema: %v",
+		dc.txn.table,
+		rowsSinceLastCheckpoint,
+		schema)
+
+	//return checkpoint
+	return &Checkpoint{
+		Table:           dc.txn.table,
+		Schema:          schema,
+		Add:             addActions,
+		Remove:          removeActions,
+		TotalActiveRows: rowsSinceLastCheckpoint,
+	}, nil
+}
+
+/*
+get the previous checkpoint file name
+read the checkpoint file
+in case of no checkpoint return nil, nil, false
+in case of error return nil, error, false
+in case exists checkpointdata,nil, true
+*/
+func (dc *deltaClient) getOrCreateCheckpoint() (*Checkpoint, error) {
+	checkPointPath := path.Join(dc.txn.table, logDir, lastCheckPoint)
+	lastCheckpointExists, err := dc.storage.keyExists(checkPointPath)
+	if err != nil {
+		log.Printf("error in checking checkpoint exists: %v", err)
+		return nil, err
+	}
+
+	var lastCheckpoint *LastCheckpoint
+	addActions := make(map[Action]any)
+	removeActions := make(map[Action]any)
+	if lastCheckpointExists {
+		//read checkpoint
+		lastCheckpointBytes, err := dc.storage.read(checkPointPath)
+		if err != nil {
+			return nil, err
+		}
+		err = json.Unmarshal(lastCheckpointBytes, &lastCheckpoint)
+		if err != nil {
+			return nil, err
+		}
+
+		//last checkpoint
+		previousCheckpoint, err := dc.readCheckpoint(lastCheckpoint.Checkpoint)
+		if err != nil {
+			return nil, err
+		}
+
+		//populate add & remove actions
+		for _, action := range previousCheckpoint.Add {
+			addActions[action] = 1
+		}
+		for _, action := range previousCheckpoint.Remove {
+			removeActions[action] = 1
+		}
+	} else {
+		lastCheckpoint = newLastCheckpoint("")
+		log.Printf("no checkpoint found")
+	}
+
+	//latest checkpoint
+	checkpoint, err := dc.logCheckpoint(addActions, removeActions, lastCheckpoint.Checkpoint)
+	if err != nil {
+		return nil, err
+	}
+
+	return checkpoint, nil
+}
+
+func (dc *deltaClient) marshallCheckpoint(schema []string, add []Action, remove []Action, activeRows int) ([]byte, error) {
 
 	checkpoint := &Checkpoint{
 		Table:           dc.txn.table,
-		ActiveLogs:      logs,
+		Schema:          schema,
+		Add:             add,
+		Remove:          remove,
 		TotalActiveRows: activeRows,
 	}
 
@@ -672,56 +781,4 @@ func (dc *deltaClient) readCheckpoint(checkpointLog string) (*Checkpoint, error)
 	}
 	return &checkpoint, nil
 
-}
-
-// TODO: merge with nxTxn as logic is similar
-func (dc *deltaClient) createLatestCheckpoint(activeLogs map[string]any, lastCheckpoint string) (int, error) {
-	//list after the last checkpoint
-	rowsSinceLastCheckpoint := 0
-	table := dc.txn.table
-	txnLogPath := path.Join(table, logDir)
-	log.Printf("txnLogPath: %s", txnLogPath)
-	txnLogs, err := dc.storage.listPrefix(txnLogPath, lastCheckpoint)
-	if err != nil {
-		return 0, err
-	}
-
-	slices.Sort(txnLogs)
-	log.Printf("txnlogs count: %d", len(txnLogs))
-
-	for _, txnLog := range txnLogs {
-		bytes, err := dc.storage.read(path.Join(txnLogPath, txnLog))
-		if err != nil {
-			return 0, err
-		}
-		var oldTxn transaction
-		err = json.Unmarshal(bytes, &oldTxn)
-		if err != nil {
-			return 0, err
-		}
-
-		// add prev actions
-		// the remove could be handled here - the removed files may be filtered for dataobjects
-		for _, action := range oldTxn.Actions {
-			if action.DataActionObject != nil {
-				//check and remove "Delete"
-				if action.DataActionObject.ActionType == "Delete" {
-					delete(activeLogs, action.DataActionObject.Name) //delete removed log
-					// substract the row count for deletes
-					rowsSinceLastCheckpoint -= action.DataActionObject.NumRows
-				}
-				//else Add the appended logs
-				activeLogs[action.DataActionObject.Name] = 1
-				rowsSinceLastCheckpoint += action.DataActionObject.NumRows
-
-			} else if action.ChangeMetadataObject != nil {
-				continue
-			} else {
-				panic("Invalid action type")
-			}
-		}
-	}
-
-	//return counts, error
-	return rowsSinceLastCheckpoint, nil
 }

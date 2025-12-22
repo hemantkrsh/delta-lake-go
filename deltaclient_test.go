@@ -132,6 +132,13 @@ func TestDeltaClientReadInMemory(t *testing.T) {
 	}
 	t.Logf("client1 txn: %+v", client1.txn)
 
+	err = client1.createTable("table1", []string{"name", "age"})
+	if err != nil {
+		t.Errorf("Failed to create table: %v", err)
+		return
+	}
+	t.Log("client1 create table")
+
 	// write few rows which are not committed i.e. not flushed
 	err = client1.writeRow("table1", []any{"Cal", 34})
 	if err != nil {
@@ -155,6 +162,7 @@ func TestDeltaClientReadInMemory(t *testing.T) {
 
 	ok, row := itr.next()
 	for {
+		t.Logf("first iteration ok: %v, row: %v", ok, row)
 		if ok != false || row != nil {
 			t.Logf("row: %v", row)
 		} else {
@@ -176,7 +184,7 @@ func TestDeltaClientReadInMemory(t *testing.T) {
 		t.Errorf("Failed to create second transaction: %v", err)
 		return
 	}
-	t.Logf("client1 second txn: %+v", client1.txn)
+	// t.Logf("client1 second txn: %+v", client1.txn)
 
 	itr, err = client1.read("table1")
 	if err != nil {
@@ -186,6 +194,7 @@ func TestDeltaClientReadInMemory(t *testing.T) {
 
 	ok, row = itr.next()
 	for {
+		t.Logf("second iteration ok: %v, row: %v", ok, row)
 		if ok != false || row != nil {
 			t.Logf("second iteration row: %v", row)
 		} else {

@@ -2,14 +2,18 @@ package delta
 
 type Checkpoint struct {
 	Table           string
-	ActiveLogs      []string // uuid
+	Schema          []string
+	Add             []Action // uuid
+	Remove          []Action // uuid
 	TotalActiveRows int
 }
 
 func newCheckpoint(table string) *Checkpoint {
 	return &Checkpoint{
 		Table:           table,
-		ActiveLogs:      make([]string, 0),
+		Schema:          make([]string, 0),
+		Add:             make([]Action, 0),
+		Remove:          make([]Action, 0),
 		TotalActiveRows: 0,
 	}
 }

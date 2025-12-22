@@ -284,6 +284,13 @@ func (fos *fileObjectStorage) listPrefix(prefix string, startAfter string) ([]st
 	// todo: table name
 	txnDir := filepath.Join(fos.deltaBaseDir, prefix)
 	log.Printf("listPrefix txnDir: %s", txnDir)
+
+	// directory exists?
+	if _, err := os.Stat(txnDir); os.IsNotExist(err) {
+		//return empty list
+		return []string{}, nil
+	}
+
 	dir, err := os.Open(txnDir)
 	if err != nil {
 		return nil, err
@@ -314,6 +321,9 @@ func (fos *fileObjectStorage) listPrefix(prefix string, startAfter string) ([]st
 			func(i, j int) bool { return files[i].ModTime().Before(files[j].ModTime()) },
 		)
 		for _, file := range files {
+			if file.IsDir() {
+				continue
+			}
 			log.Printf("file: %s \n", file.Name())
 			if !startFound {
 				if file.Name() == startAfter {
