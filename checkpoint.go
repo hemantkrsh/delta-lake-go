@@ -28,4 +28,4 @@ func newLastCheckpoint(name string) *LastCheckpoint {
 	}
 }
 
-const checkpointFrequency = 10
+const checkpointFrequency = 2 //for testing else Defaults to 10

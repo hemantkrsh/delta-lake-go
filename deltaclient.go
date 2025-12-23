@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"path"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -607,6 +608,66 @@ func (dc *deltaClient) triggerCheckpoint(index int) error {
 	return nil
 }
 
+/*
+get the previous checkpoint file name
+read the checkpoint file
+in case of no checkpoint return nil, nil, false
+in case of error return nil, error, false
+in case exists checkpointdata,nil, true
+*/
+func (dc *deltaClient) getOrCreateCheckpoint() (*Checkpoint, error) {
+	checkPointPath := filepath.Join(dc.txn.table, logDir, lastCheckPoint)
+	lastCheckpointExists, err := dc.storage.keyExists(checkPointPath)
+	if err != nil {
+		log.Printf("error in checking checkpoint exists: %v", err)
+		return nil, err
+	}
+
+	var lastCheckpoint *LastCheckpoint
+	addActions := make(map[Action]any)
+	removeActions := make(map[Action]any)
+	activeRows := 0
+
+	if lastCheckpointExists {
+		//read checkpoint
+		lastCheckpointBytes, err := dc.storage.read(checkPointPath)
+		if err != nil {
+			return nil, err
+		}
+		err = json.Unmarshal(lastCheckpointBytes, &lastCheckpoint)
+		if err != nil {
+			return nil, err
+		}
+
+		//last checkpoint
+		previousCheckpoint, err := dc.readCheckpoint(lastCheckpoint.Checkpoint)
+		if err != nil {
+			return nil, err
+		}
+		activeRows = previousCheckpoint.TotalActiveRows
+
+		//populate add & remove actions
+		for _, action := range previousCheckpoint.Add {
+			addActions[action] = 1
+		}
+		for _, action := range previousCheckpoint.Remove {
+			removeActions[action] = 1
+		}
+	} else {
+		lastCheckpoint = newLastCheckpoint("")
+		log.Printf("no checkpoint found")
+	}
+
+	//latest checkpoint
+	checkpoint, err := dc.logCheckpoint(addActions, removeActions, lastCheckpoint.Checkpoint)
+	if err != nil {
+		return nil, err
+	}
+	checkpoint.TotalActiveRows = checkpoint.TotalActiveRows + activeRows //add from previous checkpoint
+
+	return checkpoint, nil
+}
+
 // Read all the files from the table and create the first checkpoint
 // Handle the Remove actions and filter them out
 func (dc *deltaClient) logCheckpoint(adds map[Action]any, removes map[Action]any, lastCheckpoint string) (*Checkpoint, error) {
@@ -648,13 +709,13 @@ func (dc *deltaClient) logCheckpoint(adds map[Action]any, removes map[Action]any
 					rowsSinceLastCheckpoint += action.DataActionObject.NumRows
 				case "Remove":
 					removes[action] = 1
-					//removeActions = append(removeActions, action)
 					//remove from add if exists
-					if _, exists := adds[action]; exists {
-						delete(adds, action)
-						rowsSinceLastCheckpoint -= action.DataActionObject.NumRows
+					for txn := range adds {
+						if txn.DataActionObject.Name == action.DataActionObject.Name {
+							delete(adds, txn)
+							rowsSinceLastCheckpoint -= action.DataActionObject.NumRows
+						}
 					}
-					//removeActions = append(removeActions, action)
 				}
 			} else if action.ChangeMetadataObject != nil {
 				// add schema -- overwrite and keep latest
@@ -688,62 +749,6 @@ func (dc *deltaClient) logCheckpoint(adds map[Action]any, removes map[Action]any
 	}, nil
 }
 
-/*
-get the previous checkpoint file name
-read the checkpoint file
-in case of no checkpoint return nil, nil, false
-in case of error return nil, error, false
-in case exists checkpointdata,nil, true
-*/
-func (dc *deltaClient) getOrCreateCheckpoint() (*Checkpoint, error) {
-	checkPointPath := path.Join(dc.txn.table, logDir, lastCheckPoint)
-	lastCheckpointExists, err := dc.storage.keyExists(checkPointPath)
-	if err != nil {
-		log.Printf("error in checking checkpoint exists: %v", err)
-		return nil, err
-	}
-
-	var lastCheckpoint *LastCheckpoint
-	addActions := make(map[Action]any)
-	removeActions := make(map[Action]any)
-	if lastCheckpointExists {
-		//read checkpoint
-		lastCheckpointBytes, err := dc.storage.read(checkPointPath)
-		if err != nil {
-			return nil, err
-		}
-		err = json.Unmarshal(lastCheckpointBytes, &lastCheckpoint)
-		if err != nil {
-			return nil, err
-		}
-
-		//last checkpoint
-		previousCheckpoint, err := dc.readCheckpoint(lastCheckpoint.Checkpoint)
-		if err != nil {
-			return nil, err
-		}
-
-		//populate add & remove actions
-		for _, action := range previousCheckpoint.Add {
-			addActions[action] = 1
-		}
-		for _, action := range previousCheckpoint.Remove {
-			removeActions[action] = 1
-		}
-	} else {
-		lastCheckpoint = newLastCheckpoint("")
-		log.Printf("no checkpoint found")
-	}
-
-	//latest checkpoint
-	checkpoint, err := dc.logCheckpoint(addActions, removeActions, lastCheckpoint.Checkpoint)
-	if err != nil {
-		return nil, err
-	}
-
-	return checkpoint, nil
-}
-
 func (dc *deltaClient) marshallCheckpoint(schema []string, add []Action, remove []Action, activeRows int) ([]byte, error) {
 
 	checkpoint := &Checkpoint{
@@ -767,7 +772,7 @@ func (dc *deltaClient) getLogName(index int, exts ...string) string {
 
 func (dc *deltaClient) readCheckpoint(checkpointLog string) (*Checkpoint, error) {
 	var checkpoint Checkpoint
-	path := path.Join(dc.txn.table, checkpointLog)
+	path := path.Join(dc.txn.table, logDir, checkpointLog)
 	checkPointBytes, err := dc.storage.read(path)
 	if err != nil {
 		log.Printf("error in reading checkpoint: %v", err)

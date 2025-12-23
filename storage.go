@@ -164,14 +164,69 @@ func (fos *fileObjectStorage) putIfAbsent(key string, data []byte) error {
 func (fos *fileObjectStorage) keyExists(key string) (bool, error) {
 	//_last_checkpoint
 	//only one exists - listPrefix len == 0 ret false
-	keys, err := fos.listPrefix(key, "")
+	// keys, err := fos.listPrefix(key, "")
+	// if err != nil {
+	// 	return false, err
+	// }
+	// if len(keys) == 0 {
+	// 	return false, nil
+	// }
+	// return true, nil
+
+	baseDir := filepath.Dir(key)
+	log.Printf("keyExists key: %s", key)
+	log.Printf("keyExists baseDir: %s", baseDir)
+
+	suffix := filepath.Base(key)
+	log.Printf("keyExists suffix: %s", suffix)
+
+	txnDir := filepath.Join(fos.deltaBaseDir, baseDir)
+	log.Printf("keyExists txnDir: %s", txnDir)
+
+	// directory exists?
+	if _, err := os.Stat(txnDir); os.IsNotExist(err) {
+		//return empty list
+		return false, nil
+	}
+
+	dir, err := os.Open(txnDir)
 	if err != nil {
 		return false, err
 	}
-	if len(keys) == 0 {
-		return false, nil
+	defer dir.Close()
+
+	// Readdirnames is expected to return the files in OS aka ls -l order
+	// Assuming txn logs are always created monotonically, sorting should not be required
+	// FIX: Use Readdir to get FileInfo objects as with tempDir the dir order of Readdir is not maintained
+
+	for {
+		var files []os.FileInfo
+		files, err := dir.Readdir(100)
+		// log.Printf("files:%v", files)
+		if err != nil && err != io.EOF {
+			return false, err
+		}
+
+		for _, file := range files {
+			if file.IsDir() {
+				continue
+			}
+			log.Printf("file: %s \n", file.Name())
+			if file.Name() == suffix {
+				return true, nil
+			}
+		}
+
+		if err == io.EOF {
+			break
+		}
+
+		if err != nil {
+			return false, err
+		}
 	}
-	return true, nil
+	// err = dir.Close()
+	return false, nil
 }
 
 // TODO: make the putIfAbsent and overwrite common with flag based approach
@@ -180,7 +235,7 @@ func (fos *fileObjectStorage) put(key string, data []byte) error {
 	tmpPath := path.Join(fos.deltaBaseDir, txnDir, tempDir, uuid.NewString())
 	finalPath := path.Join(fos.deltaBaseDir, key) // Full path including table name
 
-	log.Printf("putIfAbsent finalpath: %v", finalPath)
+	log.Printf("put finalpath: %v", finalPath)
 
 	// Ensure parent directories exist for both temp and final paths
 	dirsToCreate := []string{
@@ -234,11 +289,12 @@ func (fos *fileObjectStorage) put(key string, data []byte) error {
 		return err
 	}
 
-	// remove the temp txn file
-	err = os.Remove(tmpPath)
-	if err != nil {
-		return err
-	}
+	// // remove the temp txn file
+	// err = os.Remove(tmpPath)
+	// if err != nil {
+	// 	log.Printf("Failed to remove temp file: %v", err)
+	// 	return err
+	// }
 
 	return nil
 
