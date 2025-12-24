@@ -5,6 +5,7 @@ import (
 	"os"
 	"path"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -263,7 +264,7 @@ func TestConcurrentDeltaClient(t *testing.T) {
 	// client2 commit
 	err = client2.commit()
 	if err != nil {
-		t.Errorf("Failed to commit: %v", err)
+		t.Errorf("Client2 failed to commit: %v", err)
 		return
 	}
 	t.Log("client2 committed")
@@ -271,7 +272,10 @@ func TestConcurrentDeltaClient(t *testing.T) {
 	// should fail to commit
 	err = client1.commit()
 	if err != nil {
-		t.Errorf("Failed to commit: %v", err)
+		t.Logf("Client1 expectedly failed to commit: %v", err)
+		if !strings.Contains(err.Error(), "file exists") {
+			t.Errorf("Expected file exists error, got: %v", err)
+		}
 		return
 	}
 	t.Log("client1 committed") // should not print
@@ -698,10 +702,13 @@ func TestGetOrCreateCheckpoint(t *testing.T) {
 			foundExisting := false
 			foundNew := false
 			for _, action := range checkpoint.Add {
-				if action.DataActionObject.Name == "existing_file.data" {
+				switch action.DataActionObject.Name {
+				case "existing_file.data":
 					foundExisting = true
-				} else if action.DataActionObject.Name == "new_file.data" {
+				case "new_file.data":
 					foundNew = true
+				default:
+					t.Logf("Unexpected file name: %s", action.DataActionObject.Name)
 				}
 			}
 			if !foundExisting || !foundNew {
