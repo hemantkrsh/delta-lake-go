@@ -161,27 +161,13 @@ func (fos *fileObjectStorage) putIfAbsent(key string, data []byte) error {
 	return nil
 }
 
+// This is a simplified version of headObject() that returns a response object with response headers with empty body
+// Can be used to check if a key exists without reading the full file content and is more efficient than doing a list operation
 func (fos *fileObjectStorage) keyExists(key string) (bool, error) {
-	//_last_checkpoint
-	//only one exists - listPrefix len == 0 ret false
-	// keys, err := fos.listPrefix(key, "")
-	// if err != nil {
-	// 	return false, err
-	// }
-	// if len(keys) == 0 {
-	// 	return false, nil
-	// }
-	// return true, nil
-
 	baseDir := filepath.Dir(key)
-	log.Printf("keyExists key: %s", key)
-	log.Printf("keyExists baseDir: %s", baseDir)
-
 	suffix := filepath.Base(key)
-	log.Printf("keyExists suffix: %s", suffix)
 
 	txnDir := filepath.Join(fos.deltaBaseDir, baseDir)
-	log.Printf("keyExists txnDir: %s", txnDir)
 
 	// directory exists?
 	if _, err := os.Stat(txnDir); os.IsNotExist(err) {
@@ -195,14 +181,9 @@ func (fos *fileObjectStorage) keyExists(key string) (bool, error) {
 	}
 	defer dir.Close()
 
-	// Readdirnames is expected to return the files in OS aka ls -l order
-	// Assuming txn logs are always created monotonically, sorting should not be required
-	// FIX: Use Readdir to get FileInfo objects as with tempDir the dir order of Readdir is not maintained
-
 	for {
 		var files []os.FileInfo
 		files, err := dir.Readdir(100)
-		// log.Printf("files:%v", files)
 		if err != nil && err != io.EOF {
 			return false, err
 		}
@@ -211,7 +192,6 @@ func (fos *fileObjectStorage) keyExists(key string) (bool, error) {
 			if file.IsDir() {
 				continue
 			}
-			log.Printf("file: %s \n", file.Name())
 			if file.Name() == suffix {
 				return true, nil
 			}
@@ -225,7 +205,6 @@ func (fos *fileObjectStorage) keyExists(key string) (bool, error) {
 			return false, err
 		}
 	}
-	// err = dir.Close()
 	return false, nil
 }
 
