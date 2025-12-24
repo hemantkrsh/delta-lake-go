@@ -71,24 +71,6 @@ func (dc *deltaClient) nwTableTxn(table string) error {
 		log.Printf("old txn:%+v", oldTxn)
 		// set new txn id
 		dc.txn.TxnId = oldTxn.TxnId + 1
-
-		// // add prev actions
-		// // the remove could be handled here - the removed files may be filtered for dataobjects
-		// for _, action := range oldTxn.Actions {
-		// 	if action.DataActionObject != nil {
-		// 		// append previous actions
-		// 		// TODO: handle remove files
-		// 		dc.txn.prevActions = append(
-		// 			dc.txn.prevActions,
-		// 			action,
-		// 		)
-		// 	} else if action.ChangeMetadataObject != nil {
-		// 		// add schema
-		// 		dc.txn.schema = action.ChangeMetadataObject.Columns
-		// 	} else {
-		// 		panic("Invalid action type")
-		// 	}
-		// }
 	}
 
 	//use checkpointing mechanism to populate prev actions and schema
@@ -243,7 +225,6 @@ func (dc *deltaClient) remove(table string, predicate string) error {
 	return nil
 }
 
-// todo: finish this
 func (dc *deltaClient) filterDataObjects(filterExpr expression) error {
 	// previous actions have the dataobjects
 	var rowsRemoved bool
@@ -390,7 +371,7 @@ func (dc *deltaClient) commit() error {
 
 	//create checkpoint every 10th txn once the txn is committed, this way the client that commits the txn, also commits the checkpoint
 	//with same index i.e. until that txn log the actions are compacted
-	if dc.txn.TxnId != 0 && dc.txn.TxnId%checkpointFrequency == 0 {
+	if dc.txn.TxnId != 0 && (dc.txn.TxnId+1)%checkpointFrequency == 0 {
 		err := dc.triggerCheckpoint(dc.txn.TxnId)
 		if err != nil {
 			dc.txn = nil
@@ -586,14 +567,15 @@ func (dc *deltaClient) triggerCheckpoint(index int) error {
 	}
 
 	//write checkpoint
-	err = dc.storage.putIfAbsent(checkpointLog, checkpointBytes)
+	checkpointPath := path.Join(dc.txn.table, logDir, checkpointLog)
+	err = dc.storage.putIfAbsent(checkpointPath, checkpointBytes)
 	if err != nil {
 		dc.txn = nil
 		return err
 	}
 
 	//update _last_checkpoint file
-	lastCheckpointLog := path.Join(dc.txn.table, lastCheckPoint) //append table name
+	lastCheckpointLog := path.Join(dc.txn.table, logDir, lastCheckPoint) //TODO: append table & logDir??
 	lastCheckpointData := &LastCheckpoint{
 		Checkpoint: checkpointLog,
 	}
@@ -601,7 +583,7 @@ func (dc *deltaClient) triggerCheckpoint(index int) error {
 	if err != nil {
 		return err
 	}
-	err = dc.storage.put(lastCheckpointLog, lastCheckpointDataBytes) //
+	err = dc.storage.put(lastCheckpointLog, lastCheckpointDataBytes)
 	if err != nil {
 		return err
 	}
