@@ -36,88 +36,130 @@ func setupTestDir(t *testing.T) (string, func()) {
 	}
 }
 
-func TestDeltaClient(t *testing.T) {
+func TestDeltaClientWrite(t *testing.T) {
 	tmpDir, cleanup := setupTestDir(t)
 	defer cleanup()
+
 	storage := NewFileObjectStorage(path.Join(tmpDir, "delta"))
+	client := NewDeltaClient(&storage)
 
-	client1 := NewDeltaClient(&storage)
-
-	// start new txn writer 1
-	err := client1.nwTxn()
-	if err != nil {
-		t.Errorf("Failed to create transaction: %v", err)
-		return
-	}
-	t.Logf("client1 txn: %+v", client1.txn)
-
-	err = client1.createTable("table1", []string{"name", "age"})
-	if err != nil {
-		t.Errorf("Failed to create table: %v", err)
-		return
-	}
-	t.Log("client1 create table")
-
-	err = client1.writeRow("table1", []any{"John", 30})
-	if err != nil {
-		t.Errorf("Failed to write row: %v", err)
-		return
-	}
-	t.Log("client1 write row1")
-
-	err = client1.writeRow("table1", []any{"Jack", 25})
-	if err != nil {
-		t.Errorf("Failed to write row: %v", err)
-		return
-	}
-	t.Log("client1 write row2")
-
-	// commit
-	err = client1.commit()
-	if err != nil {
-		t.Errorf("Failed to commit: %v", err)
-		return
-	}
-	t.Log("client1 committed")
+	t.Run("Table creation and writes should complete without errors", func(t *testing.T) {
+		err := client.nwTxn()
+		if err != nil {
+			t.Fatalf("Table creation failed at transaction start: %v", err)
+		}
+		// Create table
+		tableName := "test_table"
+		schema := []string{"name", "age"}
+		if err := client.createTable(tableName, schema); err != nil {
+			t.Fatalf("Table creation failed: %v", err)
+		}
+		if err := client.commit(); err != nil {
+			t.Fatalf("Table creation commit failed: %v", err)
+		}
+		if err := client.nwTxn(); err != nil {
+			t.Fatalf("Write transaction start failed: %v", err)
+		}
+		testData := []struct {
+			name string
+			age  int
+		}{
+			{"John", 30},
+			{"Jack", 25},
+		}
+		for i, data := range testData {
+			if err := client.writeRow(tableName, []any{data.name, data.age}); err != nil {
+				t.Fatalf("Write operation %d failed: %v", i, err)
+			}
+		}
+		// Commit
+		if err := client.commit(); err != nil {
+			t.Fatalf("Write commit failed: %v", err)
+		}
+		t.Logf("Successfully completed all operations without errors")
+	})
 }
 
 func TestDeltaClientRead(t *testing.T) {
 	tmpDir, cleanup := setupTestDir(t)
 	defer cleanup()
+
 	storage := NewFileObjectStorage(path.Join(tmpDir, "delta"))
+	client := NewDeltaClient(&storage)
+	tableName := "test_read_table"
 
-	client1 := NewDeltaClient(&storage)
-
-	// start new txn writer 1
-	err := client1.nwTxn()
-	if err != nil {
-		t.Errorf("Failed to create transaction: %v", err)
-		return
-	}
-	t.Logf("client1 txn: %+v", client1.txn)
-
-	itr, err := client1.read("table1")
-	if err != nil {
-		t.Errorf("Failed to create the iterator:%v", err)
-		return
+	testData := []struct {
+		name string
+		age  int
+	}{
+		{"John", 30},
+		{"Jack", 25},
 	}
 
-	ok, row := itr.next()
-	for {
-		if ok != false || row != nil {
-			t.Logf("row: %v", row)
-		} else {
-			break
+	t.Run("Write test data", func(t *testing.T) {
+		if err := client.nwTxn(); err != nil {
+			t.Fatalf("Failed to start transaction: %v", err)
 		}
-		ok, row = itr.next()
-	}
 
-	err = client1.commit()
-	if err != nil {
-		t.Errorf("Failed to commit: %v", err)
-		return
-	}
-	t.Log("client1 read-only txn committed")
+		//Create table
+		if err := client.createTable(tableName, []string{"name", "age"}); err != nil {
+			t.Fatalf("Failed to create table: %v", err)
+		}
+		// Write
+		for _, data := range testData {
+			if err := client.writeRow(tableName, []any{data.name, data.age}); err != nil {
+				t.Fatalf("Failed to write row: %v", err)
+			}
+		}
+		// Commit
+		if err := client.commit(); err != nil {
+			t.Fatalf("Failed to commit writes: %v", err)
+		}
+	})
+
+	t.Run("Read and verify data", func(t *testing.T) {
+		if err := client.nwTxn(); err != nil {
+			t.Fatalf("Failed to start read transaction: %v", err)
+		}
+		// Read
+		iterator, err := client.read(tableName)
+		if err != nil {
+			t.Fatalf("Failed to create iterator: %v", err)
+		}
+
+		var rows [][]any
+		ok, row := iterator.next()
+		for {
+			if ok != false || row != nil {
+				rows = append(rows, row)
+			} else {
+				break
+			}
+			ok, row = iterator.next()
+		}
+
+		// count
+		if len(rows) != len(testData) {
+			t.Fatalf("Expected %d rows, got %d", len(testData), len(rows))
+		}
+		// Verify each row's data
+		for i, row := range rows {
+			expected := testData[i]
+
+			if name, ok := row[0].(string); !ok || name != expected.name {
+				t.Errorf("Row %d name mismatch: got %v, want %s", i, row[0], expected.name)
+			}
+
+			// json reads as float64
+			if age, ok := row[1].(float64); !ok || int(age) != expected.age {
+				t.Errorf("Row %d age mismatch: got %v, want %d", i, row[1], expected.age)
+			}
+		}
+		// Commit
+		if err := client.commit(); err != nil {
+			t.Fatalf("Failed to commit read transaction: %v", err)
+		}
+	})
 }
 
 func TestDeltaClientReadInMemory(t *testing.T) {

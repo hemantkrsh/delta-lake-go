@@ -28,6 +28,8 @@ var (
 	errNoTxn               = errors.New("no transaction exists")
 	errTableExists         = errors.New("table already exists")
 	errTableNotFound       = errors.New("table not found")
+	errSchemaCannotBeEmpty = errors.New("schema cannot be empty")
+	errSchemaMismatch      = errors.New("schema mismatch")
 	errIncorrectExprFormat = errors.New("query is not formatted correctly")
 )
 
@@ -93,6 +95,10 @@ func (dc *deltaClient) createTable(table string, schema []string) error {
 		return errNoTxn
 	}
 
+	if len(schema) == 0 {
+		return errSchemaCannotBeEmpty
+	}
+
 	dc.nwTableTxn(table)
 
 	log.Printf("txn id:%d", dc.txn.TxnId)
@@ -125,6 +131,11 @@ func (dc *deltaClient) writeRow(table string, row []any) error {
 
 	if len(dc.txn.schema) == 0 {
 		return errTableNotFound
+	}
+
+	// check if schema matches
+	if len(dc.txn.schema) != len(row) {
+		return fmt.Errorf("%w: expected %d columns, got %d", errSchemaMismatch, len(dc.txn.schema), len(row))
 	}
 
 	// Initialize unflushed data if not already initialized
@@ -383,8 +394,6 @@ func (dc *deltaClient) commit() error {
 	return nil
 }
 
-// todo: manage txn and data write to table specific folder - managing the path for table -- Done
-
 type rowIterator struct {
 	deltaClient     *deltaClient
 	inMemoryRows    *[DATA_OBJECT_SIZE][]any
@@ -477,7 +486,6 @@ func (dc *deltaClient) read(table string) (*rowIterator, error) {
 	}
 
 	// filter if the same file is part of Remove and Add
-
 	itr := &rowIterator{
 		deltaClient:          dc,
 		inMemoryRows:         dc.txn.unflushedData,
@@ -505,20 +513,6 @@ func (dc *deltaClient) readDataObject(name string) (*dataObject, error) {
 		return nil, err
 	}
 	return dObject, nil
-}
-
-func (dc *deltaClient) readRow(name string) ([]any, error) {
-	dObjectKey := path.Join(dc.txn.table, name)
-	bytes, err := dc.storage.read(dObjectKey)
-	if err != nil {
-		return nil, err
-	}
-	var row []any
-	err = json.Unmarshal(bytes, &row)
-	if err != nil {
-		return nil, err
-	}
-	return row, nil
 }
 
 func (dc *deltaClient) filterDeletes(actions []Action) []Action {
@@ -575,7 +569,7 @@ func (dc *deltaClient) triggerCheckpoint(index int) error {
 	}
 
 	//update _last_checkpoint file
-	lastCheckpointLog := path.Join(dc.txn.table, logDir, lastCheckPoint) //TODO: append table & logDir??
+	lastCheckpointLog := path.Join(dc.txn.table, logDir, lastCheckPoint)
 	lastCheckpointData := &LastCheckpoint{
 		Checkpoint: checkpointLog,
 	}
