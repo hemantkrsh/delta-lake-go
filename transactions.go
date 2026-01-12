@@ -28,18 +28,18 @@ type transaction struct {
 
 	schema []string // table -> column mapping
 
-	// table -> array of slices of any with data_object_size
-	// basically store the data actions until data_object_size and then flush
-	unflushedData        *[DATA_OBJECT_SIZE][]any
-	unflushedDataPointer int
+	// table -> array of slices of any
+	// store the data actions until data_object_size and then flush
+	writeBuffer        *[DATA_OBJECT_SIZE][]any
+	writeBufferPointer int
 }
 
 func NewTransaction() *transaction {
 	return &transaction{
-		TxnId:                0,
-		Actions:              make([]Action, 0, 5),
-		prevActions:          make([]Action, 0, 2),
-		schema:               make([]string, 0, 5),
-		unflushedDataPointer: 0,
+		TxnId:              0,
+		Actions:            make([]Action, 0, 1),
+		prevActions:        make([]Action, 0, 1),
+		schema:             make([]string, 0, 1),
+		writeBufferPointer: 0,
 	}
 }

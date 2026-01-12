@@ -139,27 +139,27 @@ func (dc *deltaClient) writeRow(table string, row []any) error {
 	}
 
 	// Initialize unflushed data if not already initialized
-	ptr := dc.txn.unflushedDataPointer
+	ptr := dc.txn.writeBufferPointer
 	if ptr == 0 {
-		dc.txn.unflushedData = &[DATA_OBJECT_SIZE][]any{}
-		dc.txn.unflushedDataPointer = 0 // todo: may be redundant
+		dc.txn.writeBuffer = &[DATA_OBJECT_SIZE][]any{}
+		dc.txn.writeBufferPointer = 0 // todo: may be redundant
 	}
 
 	// flush if size is reached
-	if dc.txn.unflushedDataPointer >= DATA_OBJECT_SIZE {
+	if dc.txn.writeBufferPointer >= DATA_OBJECT_SIZE {
 		dc.flushRows(table)
 		ptr = 0
 	}
 
-	dc.txn.unflushedData[ptr] = row
-	dc.txn.unflushedDataPointer++
+	dc.txn.writeBuffer[ptr] = row
+	dc.txn.writeBufferPointer++
 	// TODO: is the ptr pointing to correct num records
 
 	return nil
 }
 
 func (dc *deltaClient) flushRows(table string) error {
-	ptr := dc.txn.unflushedDataPointer
+	ptr := dc.txn.writeBufferPointer
 
 	// if no data actions then return -- read-only txns
 	if ptr == 0 {
@@ -167,8 +167,8 @@ func (dc *deltaClient) flushRows(table string) error {
 	}
 
 	dataObject := dataObject{
-		Data: dc.txn.unflushedData[:ptr],
-		Len:  dc.txn.unflushedDataPointer,
+		Data: dc.txn.writeBuffer[:ptr],
+		Len:  dc.txn.writeBufferPointer,
 	}
 
 	bytes, err := json.Marshal(dataObject)
@@ -183,7 +183,7 @@ func (dc *deltaClient) flushRows(table string) error {
 		ActionType: "Add",
 		Table:      table,
 		Name:       name,
-		NumRows:    dc.txn.unflushedDataPointer, // count of rows
+		NumRows:    dc.txn.writeBufferPointer, // count of rows
 	}
 
 	// write the data object
@@ -200,7 +200,7 @@ func (dc *deltaClient) flushRows(table string) error {
 	fmt.Printf("flushRows txn: %+v", dc.txn)
 
 	// reset the unflushed data
-	dc.txn.unflushedDataPointer = 0
+	dc.txn.writeBufferPointer = 0
 
 	return nil
 }
@@ -290,15 +290,15 @@ func (dc *deltaClient) filterDataObjects(filterExpr expression) error {
 }
 
 func (dc *deltaClient) filterInMemoryRecords(filterExpr expression) error {
-	if dc.txn.unflushedDataPointer == 0 {
+	if dc.txn.writeBufferPointer == 0 {
 		// there is no unflushed data
 		return nil
 	}
 	filteredUnflushedRecords := &[DATA_OBJECT_SIZE][]any{}
 	newUnflushedDataPointer := 0
 
-	for ptr := range dc.txn.unflushedDataPointer {
-		currRow := dc.txn.unflushedData[ptr]
+	for ptr := range dc.txn.writeBufferPointer {
+		currRow := dc.txn.writeBuffer[ptr]
 		if row(currRow).filter(filterExpr.(simpleExpression)) {
 			filteredUnflushedRecords[newUnflushedDataPointer] = currRow
 			newUnflushedDataPointer++
@@ -306,8 +306,8 @@ func (dc *deltaClient) filterInMemoryRecords(filterExpr expression) error {
 	}
 
 	// now switch the unflusheddata and ptr both
-	dc.txn.unflushedData = filteredUnflushedRecords
-	dc.txn.unflushedDataPointer = newUnflushedDataPointer
+	dc.txn.writeBuffer = filteredUnflushedRecords
+	dc.txn.writeBufferPointer = newUnflushedDataPointer
 	return nil
 }
 
@@ -488,8 +488,8 @@ func (dc *deltaClient) read(table string) (*rowIterator, error) {
 	// filter if the same file is part of Remove and Add
 	itr := &rowIterator{
 		deltaClient:          dc,
-		inMemoryRows:         dc.txn.unflushedData,
-		inMemoryRowsLen:      dc.txn.unflushedDataPointer,
+		inMemoryRows:         dc.txn.writeBuffer,
+		inMemoryRowsLen:      dc.txn.writeBufferPointer,
 		inMemoryRowsPtr:      0,
 		dataObjects:          dataObjectsToRead,
 		dataObjectsPtr:       0,
