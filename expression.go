@@ -23,21 +23,6 @@ type simpleExpression struct {
 	right    expression // would be a primitive type int,float,string etc
 }
 
-// a complex expr can be expressed as below
-// simpleExpr1 logicalOperator simpleExpr2 .....
-
-// dc.remove(table, predicate)
-// []any -> row.filter()
-// from dc access table schema, get colIdx
-// for each row:
-// create simpleExpr
-// invoke eval(simpleExpr), eval is a method on expression
-
-// new
-// expr -> compile(get colId) at dc.remove() body {}
-// on row iterator -> row.filter(simpleExpression)
-// filter -> return eval()
-
 func (r row) filter(expr simpleExpression) bool {
 	return eval(string(expr.operator), r[expr.left], expr.right)
 }
@@ -99,8 +84,8 @@ func eval(cond string, leftValue any, rightValue any) bool {
 	}
 }
 
-// there should be better ways to do this
-func getTypeFrmStrVal(stringValue string) interface{} {
+// TODO: there should be better ways to do this
+func getTypeFrmStrVal(stringValue string) any {
 	for {
 		if val, err := strconv.Atoi(stringValue); err != nil {
 			return val
