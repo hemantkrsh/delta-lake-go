@@ -36,6 +36,7 @@ const (
 	dataExt        = ".data"
 	lastCheckPoint = "_last_checkpoint"
 	checkpointExt  = ".checkpoint"
+	pageSize       = 4 * 1024
 )
 
 func NewFileObjectStorage(deltaBaseDir string) fileObjectStorage {
@@ -61,18 +62,10 @@ func (fos *fileObjectStorage) putObject(key string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	bufferSize := 16 * 1024
-	written := 0
 
-	for written < len(data) {
-		toWrite := min(bufferSize+written, len(data))
-		n, err := file.Write(data[written:toWrite])
-		if err != nil {
-			errRemove := os.Remove(path)
-			assert(errRemove == nil, "error removing data file")
-			return err
-		}
-		written += n
+	err = fos.writeData(data, file, path)
+	if err != nil {
+		return err
 	}
 
 	err = file.Sync()
@@ -120,16 +113,10 @@ func (fos *fileObjectStorage) putIfAbsent(key string, data []byte) error {
 		fmt.Printf("error in creating the tmpFile:%v", err)
 		return err
 	}
-	bufferSize := 4 * 1024 // 4KB
-	written := 0
-	for written < len(data) {
-		toWrite := min(bufferSize+written, len(data))
-		n, err := tmpFile.Write(data[written:toWrite])
-		if err != nil {
-			assert(os.Remove(tmpPath) == nil, "Failed to remove temp file")
-			return err
-		}
-		written += n
+
+	err = fos.writeData(data, tmpFile, tmpPath)
+	if err != nil {
+		return err
 	}
 
 	err = tmpFile.Sync()
@@ -235,16 +222,9 @@ func (fos *fileObjectStorage) put(key string, data []byte) error {
 		return err
 	}
 
-	bufferSize := 4 * 1024 //page default size 4KB
-	written := 0
-	for written < len(data) {
-		toWrite := min(bufferSize+written, len(data))
-		n, err := tmpFile.Write(data[written:toWrite])
-		if err != nil {
-			assert(os.Remove(tmpPath) == nil, "Failed to remove temp file")
-			return err
-		}
-		written += n
+	err = fos.writeData(data, tmpFile, tmpPath)
+	if err != nil {
+		return err
 	}
 
 	err = tmpFile.Sync()
@@ -268,15 +248,23 @@ func (fos *fileObjectStorage) put(key string, data []byte) error {
 		return err
 	}
 
-	// // remove the temp txn file
-	// err = os.Remove(tmpPath)
-	// if err != nil {
-	// 	log.Printf("Failed to remove temp file: %v", err)
-	// 	return err
-	// }
-
 	return nil
 
+}
+
+func (*fileObjectStorage) writeData(data []byte, tmpFile *os.File, tmpPath string) error {
+	written := 0
+	for written < len(data) {
+		toWrite := min(pageSize+written, len(data))
+		n, err := tmpFile.Write(data[written:toWrite])
+		if err != nil {
+			errRemove := os.Remove(tmpPath)
+			assert(errRemove == nil, "error removing data file")
+			return err
+		}
+		written += n
+	}
+	return nil
 }
 
 func (fos *fileObjectStorage) previousIndex(name string) string {
