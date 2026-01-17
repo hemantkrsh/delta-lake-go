@@ -8,7 +8,6 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
-	"strings"
 
 	"github.com/google/uuid"
 )
@@ -258,7 +257,9 @@ func (dc *deltaClient) filterDataObjects(filterExpr expression) error {
 			for objIdx := range dataObject.Len {
 				currRow := dataObject.Data[objIdx]
 				log.Printf("curr row %d:%+v", objIdx, currRow)
-				if row(currRow).filter(filterExpr.(simpleExpression)) {
+				if ok, err := row(currRow).filter(filterExpr.(simpleExpression)); err != nil {
+					return err
+				} else if ok {
 					log.Printf("row filtered:%+v", currRow...)
 					if !rowsRemoved {
 						rowsRemoved = true
@@ -299,7 +300,9 @@ func (dc *deltaClient) filterInMemoryRecords(filterExpr expression) error {
 
 	for ptr := range dc.txn.writeBufferPointer {
 		currRow := dc.txn.writeBuffer[ptr]
-		if row(currRow).filter(filterExpr.(simpleExpression)) {
+		if ok, err := row(currRow).filter(filterExpr.(simpleExpression)); err != nil {
+			return err
+		} else if ok {
 			filteredUnflushedRecords[newUnflushedDataPointer] = currRow
 			newUnflushedDataPointer++
 		}
@@ -309,33 +312,6 @@ func (dc *deltaClient) filterInMemoryRecords(filterExpr expression) error {
 	dc.txn.writeBuffer = filteredUnflushedRecords
 	dc.txn.writeBufferPointer = newUnflushedDataPointer
 	return nil
-}
-
-func getSimpleExpr(schema []string, predicate string) (simpleExpression, error) {
-	// simple expression is of type col > | < | == | != value
-	predicateTokens := strings.Split(predicate, " ")
-	if len(predicateTokens) < 3 {
-		return simpleExpression{}, errIncorrectExprFormat
-	}
-	colIdx, err := getColIndex(schema, predicateTokens[0])
-	if err != nil {
-		return simpleExpression{}, err
-	}
-	expr := simpleExpression{
-		left:     colIdx,
-		operator: Operator(strings.TrimSpace(predicateTokens[1])),
-		right:    expression(strings.TrimSpace(predicateTokens[2])),
-	}
-	return expr, nil
-}
-
-func getColIndex(schema []string, col string) (int, error) {
-	for idx := range schema {
-		if strings.Compare(schema[idx], col) == 0 {
-			return idx, nil
-		}
-	}
-	return 0, nil
 }
 
 // One txn for write to an existing table
@@ -394,59 +370,6 @@ func (dc *deltaClient) commit() error {
 	return nil
 }
 
-type rowIterator struct {
-	deltaClient     *deltaClient
-	inMemoryRows    *[DATA_OBJECT_SIZE][]any
-	inMemoryRowsLen int
-	inMemoryRowsPtr int
-
-	dataObjects    []dataObject
-	dataObjectsPtr int
-
-	currentDataObject    *dataObject
-	currentDataObjectLen int
-	currentDataObjectPtr int
-}
-
-func (itr *rowIterator) next() (bool, []any) {
-	// start with in-memory rows
-	if itr.inMemoryRowsPtr < itr.inMemoryRowsLen {
-		row := itr.inMemoryRows[itr.inMemoryRowsPtr]
-		itr.inMemoryRowsPtr++
-		return true && len(itr.dataObjects) > 0, row
-		// true if ptr<len || dataObjects exists that means there is at least 1 more row
-	}
-
-	// action -> dataObject ==> rows
-	if itr.dataObjectsPtr < len(itr.dataObjects) {
-		itr.currentDataObject = &itr.dataObjects[itr.dataObjectsPtr]
-	}
-
-	if itr.dataObjectsPtr == len(itr.dataObjects) {
-		itr = nil
-		return false, nil
-	}
-
-	if itr.currentDataObject != nil {
-		if itr.currentDataObjectPtr == itr.currentDataObject.Len {
-			itr.dataObjectsPtr++
-			itr.currentDataObjectPtr = 0 // reset the ptr to curr data object
-			return itr.next()
-		}
-		if itr.currentDataObjectPtr < itr.currentDataObject.Len {
-			row := itr.currentDataObject.Data[itr.currentDataObjectPtr]
-			itr.currentDataObjectPtr++
-			moreRows := itr.currentDataObjectPtr < itr.currentDataObject.Len ||
-				len(itr.dataObjects)-1 > itr.dataObjectsPtr
-				// needs re-work
-			return moreRows, row
-			// more dataObjects or more rows
-		}
-	}
-
-	return false, nil
-}
-
 func (dc *deltaClient) read(table string) (*rowIterator, error) {
 	if dc.txn == nil {
 		return nil, errNoTxn
@@ -475,7 +398,7 @@ func (dc *deltaClient) read(table string) (*rowIterator, error) {
 		}
 	}
 
-	filteredActions := dc.filterDeletes(dataActions)
+	filteredActions := filterDeletes(dataActions)
 
 	for _, action := range filteredActions {
 		daObject, err := dc.readDataObject(action.DataActionObject.Name)
@@ -515,24 +438,6 @@ func (dc *deltaClient) readDataObject(name string) (*dataObject, error) {
 	return dObject, nil
 }
 
-func (dc *deltaClient) filterDeletes(actions []Action) []Action {
-	removedFileMap := make(map[string]struct{})
-	var filteredActions []Action
-
-	for _, action := range actions {
-		if action.DataActionObject.ActionType == "Remove" {
-			removedFileMap[action.DataActionObject.Name] = struct{}{}
-		}
-	}
-	// loop and delete the actions of type Add and Remove for a table file
-	for _, action := range actions {
-		if _, exists := removedFileMap[action.DataActionObject.Name]; !exists {
-			filteredActions = append(filteredActions, action)
-		}
-	}
-	return filteredActions
-}
-
 /*
 iterate on the logs since last checkpoint(if exists using the _lastest_checkpoint file) else from the start.
 leverage the iterate logic to remove the files with REMOVE and only keep the ADD
@@ -554,7 +459,7 @@ func (dc *deltaClient) triggerCheckpoint(index int) error {
 
 	log.Printf("activeRows: %d", checkpoint.TotalActiveRows)
 
-	checkpointLog := dc.getLogName(index, logExt, checkpointExt)
+	checkpointLog := getLogName(index, logExt, checkpointExt)
 	checkpointBytes, err := dc.marshallCheckpoint(checkpoint.Schema, checkpoint.Add, checkpoint.Remove, checkpoint.TotalActiveRows)
 	if err != nil {
 		return err
@@ -740,10 +645,6 @@ func (dc *deltaClient) marshallCheckpoint(schema []string, add []Action, remove 
 		return nil, err
 	}
 	return bytes, nil
-}
-
-func (dc *deltaClient) getLogName(index int, exts ...string) string {
-	return fmt.Sprintf("%020d%s", index, strings.Join(exts, ""))
 }
 
 func (dc *deltaClient) readCheckpoint(checkpointLog string) (*Checkpoint, error) {
