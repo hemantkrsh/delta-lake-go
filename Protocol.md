@@ -1,8 +1,9 @@
 # Delta Lake Protocol Specification
 
-This document outlines the protocol for reading from and writing to Delta Lake tables.
+This document outlines the protocol for reading from and writing to Delta Lake tables. Referenced from <https://github.com/delta-io/delta/blob/master/PROTOCOL.md>
 
 ## Table of Contents
+
 - [Read Protocol](#read-protocol)
 - [Write Protocol](#write-protocol)
 - [Reader Requirements](#reader-requirements)
