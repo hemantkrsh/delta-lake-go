@@ -23,29 +23,41 @@ This project is a simplified, educational implementation of the Delta Lake proto
 
 This is an educational implementation that focuses on the core concepts from the paper:
 
-- Implements the optimistic concurrency control model using conditional writes
 - Demonstrates the transaction protocol for ACID table storage
-- Focuses on the core mechanics of the Delta protocol
-- Omits some production features for clarity and educational purposes
+- Implements the optimistic concurrency control model using conditional writes
+- Implements inserts, reads, and deletes with support for simple expressions
+- Implements checkpointing for efficient reads
+
+Does not support:
+
+- Updates
+- Merges
 
 ## Architecture
 
 ### Core Components
 
 1. **Delta Client**: The main interface for interacting with Delta tables
-2. **Transaction Manager**: Handles optimistic concurrency control and conflict resolution
+2. **Transaction**: Handles optimistic concurrency control
 3. **Object Storage**: Abstracted storage layer (S3, Azure Blob, etc.)
-4. **Log Store**: Manages the transaction log (Delta Log)
-5. **Checkpoint Service**: Periodically creates checkpoints for efficient reads
+4. **Checkpoint**: Periodically creates checkpoints for efficient reads
 
 ### Concurrency Model
 
-The implementation uses an optimistic concurrency control model with the following key concepts:
+The implementation uses an optimistic concurrency control model as per the paper:
 
-1. **Read Phase**: Clients read the latest table version and prepare their changes
-2. **Validation Phase**: Before committing, clients verify no conflicting writes occurred
-3. **Write Phase**: Changes are written using conditional writes to ensure atomicity
-4. **Conflict Resolution**: Conflicts are detected using version numbers and conditional writes
+1. **Read Phase**: Clients read the latest table version(through transaction id) and prepare their changes
+2. **Validation Phase**: Before committing, clients verify no conflicting writes occurred through the txn id (log)
+3. **Write Phase**: Changes are committed using conditional writes to ensure atomicity
+4. **Conflict Resolution**: Conflicts are detected using transaction numbers and conditional writes
+
+## Concurrency Control
+
+This implementation mimics object storage's conditional writes (like S3's `If-None-Match` or `If-Match` headers) to implement optimistic concurrency control:
+
+1. Writers read the current version and attempt to commit the next version
+2. The commit operation fails if the current version has changed since reading
+3. On conflict, the operation should be retried with the latest version. Though not part of this implementation, this is the ideal behaviour.
 
 ## Installation
 
@@ -118,6 +130,51 @@ if err := txn.Commit(); err != nil {
 }
 ```
 
+### Reading Data
+
+```go
+// Start a new read transaction
+if err := client.nwTxn(); err != nil {
+    log.Fatalf("Failed to start transaction: %v", err)
+}
+
+// Read all data from the table
+iter, err := client.read("users")
+if err != nil {
+    log.Fatalf("Failed to read data: %v", err)
+}
+
+// Iterate through the rows
+var rows [][]any
+ok, row := iter.next()
+for ok || row != nil {
+    if row != nil {
+        rows = append(rows, row)
+        log.Printf("Row: %v", row)
+    }
+    ok, row = iter.next()
+}
+```
+
+### Delete with Simple Expressions
+
+```go
+// Start a new read transaction
+if err := client.nwTxn(); err != nil {
+    log.Fatalf("Failed to start transaction: %v", err)
+}
+// This will remove rows where age is greater than 25
+err = client.remove("users", "age > 25")
+if err != nil {
+    log.Fatalf("Failed to remove data: %v", err)
+}
+
+// Commit the transaction
+if err := client.commit(); err != nil {
+    log.Fatalf("Failed to commit transaction: %v", err)
+}
+```
+
 ## Testing
 
 Run the test suite:
@@ -128,29 +185,9 @@ go test -v ./...
 
 ## Documentation
 
-For detailed documentation, see:
+For detailed documentation on the protocol from the delta-io project, refer:
 
 - [Protocol Specification](./Protocol.md)
-- [API Reference](https://pkg.go.dev/github.com/yourusername/delta-lake-go)
-
-## Concurrency Control Details
-
-This implementation uses object storage's conditional writes (like S3's `If-None-Match` or `If-Match` headers) to implement optimistic concurrency control:
-
-1. Each table version is stored as a separate object
-2. Writers read the current version and attempt to write the next version
-3. The write operation fails if the current version has changed since reading
-4. On conflict, the operation is retried with the latest version
-
-## Performance Considerations
-
-- **Checkpointing**: Regularly creates Parquet checkpoints to speed up reads
-- **Compaction**: Merges small files to maintain read performance
-- **Caching**: Caches frequently accessed metadata
-
-## Contributing
-
-Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md) for details.
 
 ## License
 
@@ -165,4 +202,6 @@ Michael Armbrust, Ali Ghodsi, Reynold Xin, and Matei Zaharia
 *Proceedings of the VLDB Endowment*, Volume 13, Issue 12 (2020)  
 [DOI: 10.14778/3415478.3415505](https://doi.org/10.14778/3415478.3415505)
 
-We also acknowledge the [Delta Lake](https://delta.io/) open source project and its community for their contributions to the broader ecosystem.
+[Delta Lake](https://delta.io/) the open source project and its community for their contributions to the broader ecosystem.
+
+Note: This is an educational implementation and omits some production features for clarity and educational purposes.

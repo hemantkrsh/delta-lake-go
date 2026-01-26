@@ -1,16 +1,13 @@
 package delta
 
 import (
-	"crypto/md5"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -45,6 +42,9 @@ func NewFileObjectStorage(deltaBaseDir string) fileObjectStorage {
 	}
 }
 
+// this method writes file to the storage. Simpler than the put() method
+// may result in partial writes
+// used for delta data files
 func (fos *fileObjectStorage) putObject(key string, data []byte) error {
 	path := path.Join(fos.deltaBaseDir, key)
 
@@ -85,8 +85,6 @@ func (fos *fileObjectStorage) putObject(key string, data []byte) error {
 	return nil
 }
 
-// todo: log or data, based on that create the link -- Done
-// todo: fix the mkdir if the folders do not exists
 func (fos *fileObjectStorage) putIfAbsent(key string, data []byte) error {
 	// create temp txn file
 	txnDir := path.Dir(key)
@@ -195,7 +193,9 @@ func (fos *fileObjectStorage) keyExists(key string) (bool, error) {
 	return false, nil
 }
 
-// TODO: make the putIfAbsent and overwrite common with flag based approach
+// this method ensures atomic overwrite (if file exists) else creates a new file
+// safer for concurrent operations and prevents partial writes
+// used to write/overwrite delta metadata files
 func (fos *fileObjectStorage) put(key string, data []byte) error {
 	txnDir := path.Dir(key)
 	tmpPath := path.Join(fos.deltaBaseDir, txnDir, tempDir, uuid.NewString())
@@ -267,42 +267,7 @@ func (*fileObjectStorage) writeData(data []byte, tmpFile *os.File, tmpPath strin
 	return nil
 }
 
-func (fos *fileObjectStorage) previousIndex(name string) string {
-	// Extract the base name without extension
-	base := strings.TrimSuffix(path.Base(name), path.Ext(name))
-	// Find the last 20 digits in the name (to handle long numbers)
-	re := regexp.MustCompile(`(\d{1,20})$`)
-	matches := re.FindStringSubmatch(base)
-	if len(matches) < 2 {
-		return "0" // Return "0" if no number found
-	}
-	// Parse the number and subtract 1 to get previous index
-	num, err := strconv.ParseInt(matches[1], 10, 64)
-	if err != nil {
-		return "0"
-	}
-	if num > 0 {
-		num--
-	}
-	return strconv.FormatInt(num, 10)
-}
-
-func (fos *fileObjectStorage) prefix(keyPath string) (string, error) {
-	//remove the base to only return prefix
-	baseIdx := strings.Index(keyPath, path.Base(keyPath))
-	if baseIdx == -1 {
-		return "", fmt.Errorf("base not found in keyPath: %s", keyPath)
-	}
-	return keyPath[:baseIdx], nil
-}
-
-func (fos *fileObjectStorage) md5(data []byte) ([]byte, error) {
-	hash := md5.Sum(data)
-	return hash[:], nil
-}
-
-// todo: support start key like listprefix of s3 -- Done
-// todo: this checks for file having a prefix, not exactly the path
+// this method list files within a prefix (directory), not the absolute path.
 func (fos *fileObjectStorage) listPrefix(prefix string, startAfter string) ([]string, error) {
 	// todo: table name
 	txnDir := filepath.Join(fos.deltaBaseDir, prefix)

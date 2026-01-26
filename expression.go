@@ -27,7 +27,7 @@ func (r row) filter(expr simpleExpression) (bool, error) {
 	return eval(string(expr.operator), r[expr.left], expr.right)
 }
 
-// todo: change signature to eval(row,expr) can be evolved to complexExpr as well which calls each []simpleExpr in loop
+// TODO: change signature to eval(row,expr) can be evolved to complexExpr as well which calls each []simpleExpr in loop
 func eval(cond string, leftValue any, rightValue any) (bool, error) {
 	switch cond {
 	case "==":
