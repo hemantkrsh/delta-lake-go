@@ -56,6 +56,10 @@ func (dc *deltaClient) nwTableTxn(table string) error {
 		return err
 	}
 
+	if len(txnLogs) == 0 {
+		return errTableNotFound
+	}
+
 	slices.Sort(txnLogs)
 	log.Printf("txnlogs count: %d", len(txnLogs))
 	for _, txnLog := range txnLogs {
