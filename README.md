@@ -1,6 +1,6 @@
 # Delta Lake Implementation in Go
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/yourusername/delta-lake-go.svg)](https://pkg.go.dev/github.com/yourusername/delta-lake-go)
+[![Go Reference](https://pkg.go.dev/badge/github.com/hemantkrsh/delta-lake-go.svg)](https://pkg.go.dev/github.com/hemantkrsh/delta-lake-go)
 
 An educational implementation of the Delta Lake protocol in Go, inspired by the paper [Delta Lake: High-Performance ACID Table Storage over Cloud Object Stores](https://www.vldb.org/pvldb/vol13/p3411-armbrust.pdf). This project demonstrates how to build an ACID table storage layer on top of object storage using optimistic concurrency control.
 
