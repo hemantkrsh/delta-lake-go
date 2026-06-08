@@ -1,4 +1,4 @@
-module github.com/hemantkrsh/delta-table-go
+module github.com/hemantkrsh/delta-lake-go
 
 go 1.22.1
 
